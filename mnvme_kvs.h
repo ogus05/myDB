@@ -12,8 +12,8 @@ private:
 public:
 	MNVME(const std::string& ctrl);
 	~MNVME();
-    int mnvme_kvs_retreive(const std::string& key, const std::string* value);
-    int mnvme_kvs_store(const std::string& key, const std::string* value);
+    std::string mnvme_kvs_retreive(std::string& key);
+    int mnvme_kvs_store(std::string& key, std::string& value);
     int mnvme_kvs_delete(const std::string &key);
     int mnvme_kvs_exists(const std::string &key);
     

@@ -1,27 +1,30 @@
 #include <errno.h>
 #include <iostream>
 #include "mnvme_kvs.h"
-#include <cmath>
 #include <string.h>
+#include <sys/mman.h>
+#include <linux/module.h>
+#include <linux/kernel.h>
 
 
-static bool setValue(__u32& value_len, __le64& prp1, __le64& prp2, const std::string* value){
-	if(value->length() != VALUE_SIZE_IN_BYTES){
-		return false;
+static void* setValue(__u32& value_len, __le64& prp1, __le64& prp2, std::string& value){
+	void* buf = malloc(value_len);
+	if(value == SPECIAL_VALUE){
+		value_len = PAGE_SIZE_IN_WORD;
+		memset(buf, 0, value_len);
+	} else{
+		value_len = (value.length() / BYTES_PER_WORD) + 1;
+		memcpy(buf, value.c_str(), value.length());
 	}
-	prp1 = ((uint32_t)(value) & 0xffffffff);
-	if(VALUE_SIZE_IN_BYTES > 31){
-		prp2 = ((uint32_t)((uint64_t)value >> 31));
-	}
-	value_len = (value->length() / BYTES_PER_WORD) - 1;
+	prp1 = (__le64)(uintptr_t)buf;
+	return buf;
 }
 
 static bool setKey(__u8& key_len, char* keyToSend, const std::string& key){
-	if(key.length() != KEY_SIZE_IN_BYTES){
-		return false;
-	}
-	key_len = (sizeof(key) / BYTES_PER_WORD) - 1;
+	key_len = (key.length());
 	strcpy(keyToSend, key.c_str());
+
+	return true;
 }
 
 MNVME::MNVME(const std::string& ctrl)
@@ -53,56 +56,64 @@ MNVME::MNVME(const std::string& ctrl)
 
 MNVME::~MNVME()
 {
-	nvme_free_ctrl(nvme_ns_get_ctrl(ns));
-	nvme_free_ns(ns);
-	nvme_free_tree(root);
 }
 
-int MNVME::mnvme_kvs_retreive(const std::string &key, const std::string *value)
+std::string MNVME::mnvme_kvs_retreive(std::string& key)
 {
-	uint32_t* result;
-
-	struct nvme_kv_command cmd;
-
-	cmd.kv_retrieve = {
+	struct nvme_kv_command* cmd = (struct nvme_kv_command*)malloc(sizeof(struct nvme_kv_command));
+	cmd->kv_retrieve = {
 		.opcode = MNVME_SPEC_KV_OPC_RETRIEVE,
 		.nsid = (unsigned int)nvme_ns_get_nsid(ns),
 	};
-	if(setValue(cmd.kv_retrieve.value_len, cmd.kv_retrieve.dptr.prp1, cmd.kv_retrieve.dptr.prp2, value)){
-		std::cout << "Error in retreive : setValue - " << *value << std::endl;
-	};
-	if(setKey(cmd.kv_retrieve.key_len, cmd.kv_retrieve.key, key)){
+
+	std::string specialValue = std::string(SPECIAL_VALUE);
+
+	void* rbuf;
+	if(!(rbuf = setValue(cmd->kv_store.value_len, cmd->kv_store.prp1, (__le64&)cmd->kv_store.prp2, specialValue))){
+		std::cout << "Error in store : setValue - " << rbuf << std::endl;
+	}
+	if(!setKey(cmd->kv_retrieve.key_len, cmd->kv_retrieve.key, key)){
 		std::cout << "Error in retreive : setKey - " << key << std::endl;
 	}
 
-	std::cout << "retreive value...." << std::endl;
-	int err = nvme_submit_io_passthru(nvme_ns_get_fd(ns), (nvme_passthru_cmd*)&cmd, result);
-	printf("retreive result : %d\n", *result);
+	cmd->kv_retrieve.data_len = cmd->kv_retrieve.value_len * BYTES_PER_WORD;
 
-	return err;
+	int err = ioctl(nvme_ns_get_fd(ns), NVME_IOCTL_IO_CMD, cmd);
+	if(err != 0){
+		std::cout << "Error in retreive : ioctl - " << errno << std::endl;
+	}
+
+	std::string retValue((const char*)rbuf);
+	free(rbuf);
+	free(cmd);
+	return retValue;
 }
 
-int MNVME::mnvme_kvs_store(const std::string& key, const std::string* value)
+int MNVME::mnvme_kvs_store(std::string& key, std::string& value)
 {
-	uint32_t* result;
-
-	struct nvme_kv_command cmd;
-
-	cmd.kv_store = {
+	struct nvme_kv_command* cmd = (struct nvme_kv_command*)malloc(sizeof(struct nvme_kv_command));
+	cmd->kv_store = {
 		.opcode = MNVME_SPEC_KV_OPC_STORE,
 		.nsid = (unsigned int)nvme_ns_get_nsid(ns),
 	};
-	if(setValue(cmd.kv_store.value_len, cmd.kv_store.dptr.prp1, cmd.kv_store.dptr.prp2, value)){
-		std::cout << "Error in store : setValue - " << *value << std::endl;
-	};
-	if(setKey(cmd.kv_store.key_len, cmd.kv_store.key, key)){
+
+	void* dbuf;
+	if(!(dbuf = setValue(cmd->kv_store.value_len, cmd->kv_store.prp1, (__le64&)cmd->kv_store.prp2, value))){
+		std::cout << "Error in store : setValue - " << value << std::endl;
+	}
+	if(!setKey(cmd->kv_store.key_len, cmd->kv_store.key, key)){
 		std::cout << "Error in store : setKey - " << key << std::endl;
 	}
 
-	std::cout << "store value...." << std::endl;
-	int err = nvme_submit_io_passthru(nvme_ns_get_fd(ns), (nvme_passthru_cmd*)&cmd, result);
-	printf("store result : %d\n", *result);
+	cmd->kv_store.data_len = cmd->kv_store.value_len * BYTES_PER_WORD;
 
+	int err = ioctl(nvme_ns_get_fd(ns), NVME_IOCTL_IO_CMD, cmd);
+	if(err != 0){
+		std::cout << "Error in store : ioctl - " << errno << std::endl;
+	}
+	
+	free(dbuf);
+	free(cmd);
 	return err;
 }
 

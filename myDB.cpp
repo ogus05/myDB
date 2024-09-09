@@ -1,5 +1,4 @@
 #include "myDB.h"
-#include <libnvme.h>
 
 bool MyStatus::IsNotFound()
 {
@@ -55,7 +54,7 @@ MyStatus MyDB::Get(const std::string &key, std::string *retValue)
     retValue = nullptr;
     int status = mnvme->mnvme_kvs_exists(key);
     if(status != 0){
-        fprintf(log, "err in MyDB::Get, %s, %d", key, status);
+        fprintf(log, "err in MyDB::Get, %s, %d", key.c_str(), status);
         return MyStatus::ERR;
     }
     
